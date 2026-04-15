@@ -1,6 +1,6 @@
 ai-robot-YANG YIFENG
 
-\# AI机器人课程 - 第1周作业
+\# AI机器人课程 - 作业
 
 
 
@@ -10,7 +10,7 @@ ai-robot-YANG YIFENG
 
 \- 学号: 20242031
 
-\- 日期: 2026-03-16
+\- Ubuntu 22.04.5 LTS
 
 
 
