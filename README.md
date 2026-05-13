@@ -13,4 +13,9 @@ ai-robot-YANG YIFENG
 \- Ubuntu 22.04.5 LTS
 
 - [week2](week2/)
-
+- [week3](week3/)
+- [week4](week4/)
+- [week5](week5/)
+- [week6](week6/)
+- [week8](week8/)
+- [week9](week9/)
