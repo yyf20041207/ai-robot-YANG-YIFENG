@@ -1,3 +1,14 @@
-title: AI 机器人课程作业
-description: ROS2 + Docker + GitHub Learning Notes
+title: 🤖 AI Robotics Portfolio
+description: ROS2 • Docker • Linux • Python • Machine Learning • Robotics
+
 theme: jekyll-theme-cayman
+
+show_downloads: false
+
+github:
+  is_project_page: true
+
+plugins:
+  - jekyll-seo-tag
+
+lang: zh-CN
