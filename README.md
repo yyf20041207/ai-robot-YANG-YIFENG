@@ -1,5 +1,20 @@
 # AI 机器人课程作业
+🤖 AI机器人课程作业
 
+### ROS2 + Docker + Linux + Python + Robotics Simulation
+
+---
+
+📚 本仓库记录 AI Robotics 课程的学习过程，包括：
+
+- ROS2 环境搭建
+- Docker 容器开发
+- GitHub 协同开发
+- Linux 系统操作
+- Python 机器人仿真
+- Laikago 四足机器人控制
+- 传感器与KITTI实验
+  
 本仓库整理了 AI Robotics 课程的每周作业和实验笔记。
 ## 课程作业目录
 
