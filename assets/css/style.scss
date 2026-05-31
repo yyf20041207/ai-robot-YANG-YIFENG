@@ -1,0 +1,23 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+.page-header {
+    background: linear-gradient(
+        135deg,
+        #0f2027,
+        #203a43,
+        #2c5364
+    );
+}
+
+.project-name {
+    font-size: 4rem;
+    font-weight: 700;
+}
+
+.project-tagline {
+    font-size: 1.5rem;
+    opacity: 0.95;
+}
