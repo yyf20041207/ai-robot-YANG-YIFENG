@@ -26,6 +26,8 @@
 - [week8](week8/)
 - [week9](week9/)
 - [week11](week11/)
+- [week12](week12/)
+- [week13](week13/)
   
 ## 关于我
 
