@@ -23,6 +23,7 @@
 - [week4](week4/)
 - [week5](week5/)
 - [week6](week6/)
+- [week7](week7/)
 - [week8](week8/)
 - [week9](week9/)
 - [week11](week11/)
