@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+import asyncio
+import json
+import math
+import threading
+from pathlib import Path
+
+from aiohttp import WSMsgType, web
+from geometry_msgs.msg import Twist
+import rclpy
+from rclpy.node import Node
+from turtlesim.msg import Pose
+from turtlesim.srv import TeleportAbsolute
+
+from maze import build_maze
+# 导入路径规划器
+from explorer import Planner
+
+HOST = "0.0.0.0"
+PORT = 8080
+CONTROL_PERIOD = 0.1
+TURTLE_RADIUS = 0.45
+
+_MAZE = build_maze()
+MAZE_BOUNDS = _MAZE["bounds"]
+START_POSE = _MAZE["start"]
+GOAL_REGION = _MAZE["goal"]
+OBSTACLES = _MAZE["obstacles"]
+
+
+class TurtleWebBridge(Node):
+    def __init__(self):
+        super().__init__("turtlesim_web_bridge")
+        self.publisher = self.create_publisher(Twist, "/turtle1/cmd_vel", 10)
+        self.subscription = self.create_subscription(
+            Pose, "/turtle1/pose", self.on_pose, 10
+        )
+        self.current_linear = 0.0
+        self.current_angular = 0.0
+        self.applied_linear = 0.0
+        self.applied_angular = 0.0
+        self.current_pose = {"x": 0.0, "y": 0.0, "theta": 0.0}
+        self.blocked = False
+        self.block_reason = "waiting_for_pose"
+        self.goal_reached = False
+        
+        # 实例化规划器和自动开关
+        self.explorer = Planner()
+        self.auto = False
+
+        self.teleport_client = self.create_client(
+            TeleportAbsolute, "/turtle1/teleport_absolute"
+        )
+        self.timer = self.create_timer(CONTROL_PERIOD, self.publish_command)
+        self.init_timer = self.create_timer(0.5, self.try_initialize_maze)
+        self.maze_initialized = False
+
+    def on_pose(self, msg):
+        self.current_pose = {
+            "x": round(msg.x, 3),
+            "y": round(msg.y, 3),
+            "theta": round(msg.theta, 3),
+        }
+        self.goal_reached = self.is_inside_goal(msg.x, msg.y)
+        if self.goal_reached:
+            self.current_linear = 0.0
+            self.current_angular = 0.0
+            self.applied_linear = 0.0
+            self.applied_angular = 0.0
+            self.blocked = False
+            self.block_reason = "goal_reached"
+            self.auto = False # 到了终点自动关闭寻路
+
+    def set_command(self, linear, angular):
+        # 只有在非自动模式下，才接收前端的手动按键控制
+        if not self.auto:
+            self.current_linear = float(linear)
+            self.current_angular = float(angular)
+
+    def stop(self):
+        self.auto = False # 强行按下停止键时，断开自动寻路
+        self.set_command(0.0, 0.0)
+
+    def try_initialize_maze(self):
+        if self.maze_initialized:
+            return
+        if not self.teleport_client.wait_for_service(timeout_sec=0.0):
+            return
+        self.reset_to_start()
+        self.maze_initialized = True
+        self.init_timer.cancel()
+
+    def reset_to_start(self):
+        if not self.teleport_client.wait_for_service(timeout_sec=0.5):
+            self.get_logger().warning("Teleport service not ready yet.")
+            return
+
+        req = TeleportAbsolute.Request()
+        req.x = float(START_POSE["x"])
+        req.y = float(START_POSE["y"])
+        req.theta = float(START_POSE["theta"])
+        self.teleport_client.call_async(req)
+
+        self.current_linear = 0.0
+        self.current_angular = 0.0
+        self.applied_linear = 0.0
+        self.applied_angular = 0.0
+        self.blocked = False
+        self.block_reason = "reset_to_start"
+        self.goal_reached = False
+        
+        # 重置寻路器内部路径状态
+        self.auto = False
+        self.explorer.waypoints = None 
+
+    def is_inside_goal(self, x, y):
+        dx = x - GOAL_REGION["x"]
+        dy = y - GOAL_REGION["y"]
+        return dx * dx + dy * dy <= GOAL_REGION["radius"] ** 2
+
+    def would_hit_boundary(self, x, y):
+        return not (
+            MAZE_BOUNDS["min_x"] + TURTLE_RADIUS <= x <= MAZE_BOUNDS["max_x"] - TURTLE_RADIUS
+            and MAZE_BOUNDS["min_y"] + TURTLE_RADIUS <= y <= MAZE_BOUNDS["max_y"] - TURTLE_RADIUS
+        )
+
+    def would_hit_obstacle(self, x, y):
+        for obstacle in OBSTACLES:
+            inflated_min_x = obstacle["x"] - TURTLE_RADIUS
+            inflated_max_x = obstacle["x"] + obstacle["w"] + TURTLE_RADIUS
+            inflated_min_y = obstacle["y"] - TURTLE_RADIUS
+            inflated_max_y = obstacle["y"] + obstacle["h"] + TURTLE_RADIUS
+            if inflated_min_x <= x <= inflated_max_x and inflated_min_y <= y <= inflated_max_y:
+                return True
+        return False
+
+    def compute_safe_motion(self):
+        x = self.current_pose["x"]
+        y = self.current_pose["y"]
+        theta = self.current_pose["theta"]
+
+        if x == 0.0 and y == 0.0:
+            self.blocked = False
+            self.block_reason = "waiting_for_pose"
+            return 0.0, self.current_angular
+
+        # 如果是自动寻路模式，直接从 explorer 获取速度，覆盖当前的手动速度
+        if self.auto and not self.goal_reached:
+            lin, ang = self.explorer.decide(self.get_state())
+            self.current_linear = lin
+            self.current_angular = ang
+
+        next_x = x + self.current_linear * CONTROL_PERIOD * math.cos(theta)
+        next_y = y + self.current_linear * CONTROL_PERIOD * math.sin(theta)
+
+        safe_linear = self.current_linear
+        if self.goal_reached:
+            safe_linear = 0.0
+            self.blocked = False
+            self.block_reason = "goal_reached"
+        elif self.would_hit_boundary(next_x, next_y):
+            safe_linear = 0.0
+            self.blocked = True
+            self.block_reason = "boundary"
+            self.auto = False # 撞墙保护，关闭自动
+        elif self.would_hit_obstacle(next_x, next_y):
+            safe_linear = 0.0
+            self.blocked = True
+            self.block_reason = "obstacle"
+            self.auto = False # 撞障保护，关闭自动
+        else:
+            self.blocked = False
+            self.block_reason = "clear"
+
+        return safe_linear, self.current_angular
+
+    def publish_command(self):
+        safe_linear, safe_angular = self.compute_safe_motion()
+        msg = Twist()
+        msg.linear.x = safe_linear
+        msg.angular.z = safe_angular
+        self.applied_linear = safe_linear
+        self.applied_angular = safe_angular
+        self.publisher.publish(msg)
+
+    def get_state(self):
+        return {
+            "pose": dict(self.current_pose),
+            "command": {
+                "linear": self.current_linear,
+                "angular": self.current_angular,
+            },
+            "applied_command": {
+                "linear": self.applied_linear,
+                "angular": self.applied_angular,
+            },
+            "rule": {
+                "blocked": self.blocked,
+                "reason": self.block_reason,
+                "goal_reached": self.goal_reached,
+                "auto": self.auto, # 传回给前端，让按键颜色实时变化
+            },
+            "maze": {
+                "bounds": dict(MAZE_BOUNDS),
+                "start": dict(START_POSE),
+                "goal": dict(GOAL_REGION),
+                "obstacles": list(OBSTACLES),
+                "turtle_radius": TURTLE_RADIUS,
+            },
+        }
+
+
+def spin_ros(node):
+    rclpy.spin(node)
+
+
+async def index(request):
+    html = Path(__file__).with_name("index.html").read_text(encoding="utf-8")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    app = request.app
+    bridge = app["bridge"]
+    app["clients"].add(ws)
+    await ws.send_json({"type": "state", "data": bridge.get_state()})
+
+    try:
+        async for msg in ws:
+            if msg.type != WSMsgType.TEXT:
+                continue
+
+            data = json.loads(msg.data)
+            msg_type = data.get("type")
+
+            if msg_type == "command":
+                bridge.set_command(data.get("linear", 0.0), data.get("angular", 0.0))
+            elif msg_type == "stop":
+                bridge.stop()
+            elif msg_type == "reset":
+                bridge.reset_to_start()
+            # 【修改】完善解析前端传回的切换自动控制信号
+            elif msg_type == "toggle_auto":
+                bridge.auto = bool(data.get("auto", False))
+                if bridge.auto:
+                    # 开启自动时，清除老路径触发重新规划
+                    bridge.explorer.waypoints = None
+                    # 清空手动残余速度输入，防止干扰切换瞬间的初速度
+                    bridge.current_linear = 0.0
+                    bridge.current_angular = 0.0
+                else:
+                    # 关闭自动时，立刻让乌龟停下，防止带着寻路残余速度继续无限滑行
+                    bridge.stop()
+
+            await ws.send_json({"type": "state", "data": bridge.get_state()})
+    finally:
+        app["clients"].discard(ws)
+    return ws
+
+
+async def broadcast_loop(app):
+    while True:
+        state_json = json.dumps({"type": "state", "data": app["bridge"].get_state()})
+        stale = []
+        for ws in app["clients"]:
+            if ws.closed:
+                stale.append(ws)
+                continue
+            await ws.send_str(state_json)
+        for ws in stale:
+            app["clients"].discard(ws)
+        await asyncio.sleep(0.2)
+
+
+async def on_startup(app):
+    rclpy.init()
+    bridge = TurtleWebBridge()
+    app["bridge"] = bridge
+    app["clients"] = set()
+    ros_thread = threading.Thread(target=spin_ros, args=(bridge,), daemon=True)
+    ros_thread.start()
+    app["ros_thread"] = ros_thread
+    app["broadcast_task"] = asyncio.create_task(broadcast_loop(app))
+
+
+async def on_cleanup(app):
+    app["broadcast_task"].cancel()
+    try:
+        await app["broadcast_task"]
+    except asyncio.CancelledError:
+        pass
+
+    app["bridge"].destroy_node()
+    rclpy.shutdown()
+    app["ros_thread"].join(timeout=1.0)
+
+
+def main():
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/ws", websocket_handler)
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+
+    print(f"Turtlesim starter listening on http://{HOST}:{PORT}")
+    web.run_app(app, host=HOST, port=PORT)
+
+
+if __name__ == "__main__":
+    main()
