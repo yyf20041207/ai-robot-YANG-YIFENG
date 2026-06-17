@@ -46,7 +46,7 @@ ros2 run turtlesim turtlesim_node
 ```
 
 成功启动后出现小乌龟仿真窗口。
-
+![这是效果图](2.png)
 ### 3. 编写控制节点
 
 创建 Python 节点，通过发布 `/turtle1/cmd_vel` 控制小乌龟运动。
