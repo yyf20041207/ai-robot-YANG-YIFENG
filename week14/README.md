@@ -63,7 +63,7 @@ ros2 run turtlesim turtlesim_node
 ```bash
 ros2 run my_package turtle_controller
 ```
-
+![这是效果图](1.jpg)
 ### 5. 迷宫探索测试
 
 通过控制算法让小乌龟在迷宫环境中移动：
